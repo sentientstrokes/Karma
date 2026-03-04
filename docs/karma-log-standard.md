@@ -141,6 +141,15 @@ logfire.info(
 
 Register your agent shortcode and pipeline Type here **before writing any logs**. This is a prerequisite action — not reference material. Check existing entries to avoid collisions. Stale or abandoned entries remain until a human cleans them up — this preserves historic trace linkage in Logfire and Langfuse.
 
+**User Confirmation Required:** Before adding any row to either registry table, the DEV AI **must** propose the shortcode or Type to the user and explain its reasoning. The DEV AI recommends — the user confirms or corrects. Do not self-register without approval.
+
+Example interaction:
+> **DEV AI:** "I'd like to register shortcode `SLA` for the Sales Architect agent — `SL` from Sales + `A` from Architect. No conflicts in the current registry. Does that work for you?"
+>
+> **User:** "Yes" / "No, use `SAR` instead"
+
+This ensures the human catches naming conflicts the DEV AI might miss (e.g., shortcodes that collide with agents in other repos not yet in this registry, or Type names that overlap with planned future pipelines). The DEV AI still does the thinking — it just pauses for a thumbs-up before writing.
+
 ### Agent Registry
 
 | Shortcode | Agent Name | Description | Owner | Date Registered |
