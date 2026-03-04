@@ -13,9 +13,8 @@ Usage:
 import argparse
 import asyncio
 import os
-import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import logfire
@@ -41,49 +40,7 @@ from karma.briefcase import (
     query_logfire_flags,
     write_briefcase,
 )
-
-
-# ---------------------------------------------------------------------------
-# Argument parsing helpers
-# ---------------------------------------------------------------------------
-
-def parse_since(value: str | None) -> datetime | None:
-    """
-    Parse the --since argument into a UTC-aware datetime.
-
-    Supported formats:
-        Relative: 30m, 2h, 1d  (minutes / hours / days from now)
-        Absolute:  any ISO 8601 string, e.g. 2026-03-03T09:00:00
-
-    Returns None when value is None (no time filter applied).
-    Raises ValueError for unrecognised formats.
-    """
-    if value is None:
-        return None
-
-    # --- Relative duration pattern ---
-    match = re.fullmatch(r"(\d+)(m|h|d)", value.strip())
-    if match:
-        amount = int(match.group(1))
-        unit   = match.group(2)
-        delta  = {"m": timedelta(minutes=amount),
-                  "h": timedelta(hours=amount),
-                  "d": timedelta(days=amount)}[unit]
-        return datetime.now(timezone.utc) - delta
-
-    # --- Absolute ISO 8601 ---
-    try:
-        dt = datetime.fromisoformat(value)
-        # Attach UTC if the string had no timezone info
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError:
-        pass
-
-    raise ValueError(
-        "--since must be a relative duration (e.g. 2h, 30m, 1d) or ISO 8601 timestamp"
-    )
+from karma.utils import parse_since
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +81,8 @@ async def main() -> None:
     karma_code = args.karma_code
     since      = parse_since(args.since)
 
-    # Single timestamp for the entire run — used as Logfire query cap
-    # and passed to generate/write so filename on disk matches body.
+    # Single timestamp for the entire run — used as Logfire query cap (F14 fix)
+    # and passed to generate/write so filename on disk matches body (F3 fix).
     briefcase_now = datetime.now(timezone.utc)
 
     # Logfire write token — used by logfire.configure() for any internal spans
@@ -140,11 +97,14 @@ async def main() -> None:
 
     # --- Query Logfire flags ---
     # LogfireQueryClient requires LOGFIRE_READ_TOKEN (separate from write token)
+    # max_timestamp=briefcase_now caps the query to this run's start time (F14 fix).
     with LogfireQueryClient(read_token=os.getenv("LOGFIRE_READ_TOKEN")) as lf_client:
+        # Both Logfire queries share the same client context and time window
         logfire_flags = query_logfire_flags(karma_code, since, briefcase_now, lf_client)
         trace_fields = query_langfuse_trace_fields(karma_code, since, briefcase_now, lf_client)  # Theme 4
 
     # --- Resolve archetype ---
+    # CLI arg takes priority; fall back to first Logfire row; fall back to "" (honest unknown)
     if args.archetype:
         archetype = args.archetype
     elif logfire_flags:
@@ -169,6 +129,7 @@ async def main() -> None:
     langfuse_context = query_langfuse_context(karma_code, since)
 
     # --- Generate and write Briefcase ---
+    # Theme 4: warn if Pipeline archetype is missing trace fields (spec says mandatory)
     if archetype == "Pipeline" and not trace_fields["langfuse_trace_url"]:
         print(
             "Warning: Pipeline-archetype run has no Langfuse trace URL in Logfire. "
@@ -180,8 +141,8 @@ async def main() -> None:
 
     content = generate_briefcase(
         karma_code, archetype, logfire_flags, langfuse_context, now=briefcase_now,
-        langfuse_trace_url=trace_fields["langfuse_trace_url"],
-        langfuse_trace_id=trace_fields["langfuse_trace_id"],
+        langfuse_trace_url=trace_fields["langfuse_trace_url"],   # Theme 4
+        langfuse_trace_id=trace_fields["langfuse_trace_id"],     # Theme 4
     )
     output_path = write_briefcase(karma_code, content, now=briefcase_now)
 
@@ -195,9 +156,13 @@ async def main() -> None:
     print(output_path)
 
 
+# asyncio.run() then langfuse.flush() — flush MUST be called after asyncio.run() completes,
+# not inside the async context, so Langfuse batched events are not silently dropped.
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     finally:
+        # flush() MUST run even if main() crashes — Langfuse batches events silently
+        # and will drop them if the process exits before flushing.
         from langfuse import get_client
         get_client().flush()

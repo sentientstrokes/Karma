@@ -104,6 +104,10 @@ These are the baseline. What Karma adds on top is described in the next section.
 
 **Theme 4 — Karma Infinity Loop**: Embeds the Langfuse trace URL and trace ID into the first Logfire span as structured attributes. Makes the Logfire-to-Langfuse path a direct link in the terminal and in the Briefcase report. No manual cross-tool search required. **[COMPLETE]**
 
+**Theme 5 — Handbook** (`docs/KARMA_LOG.md`): This document. System context for AI agents working in any Karma-instrumented project. **[COMPLETE]**
+
+**Theme 6 — KARMA MCP**: A full investigation surface for dev AI tools. 9 MCP tools (4 quick-check + 5 deep investigation) and 4 resources (briefcases + playbooks), all keyed by `karma_code`. Quick-check: `get_briefcase`, `get_health`, `query_flags`, `get_trace_url`. Deep investigation: `query_logfire` (browse all logs), `list_langfuse_traces`, `get_langfuse_trace`, `get_langfuse_observation` (full prompt/completion), `list_langfuse_observations`. Playbooks: `karma://playbook/investigation` (YOLO investigation loop), `karma://playbook/quick-check` (3-call health check). A dev AI adds one config stanza to Claude Code or Cursor and queries Karma directly — no file reads, no CLI invocations. **[COMPLETE]**
+
 _This section reflects the system as of the Last Updated date above. Update it when themes ship._
 
 ---

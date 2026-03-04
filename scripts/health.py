@@ -8,9 +8,8 @@ Run with: uv run python scripts/health.py --karma-code NRD-Sale-101
 """
 
 import argparse
-import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import os
@@ -27,47 +26,9 @@ import logfire
 from langfuse import get_client
 
 from karma.health import CSV_FIELDNAMES, append_health_row, query_langfuse_health, query_logfire_health
+from karma.utils import parse_since
 
 langfuse = get_client()
-
-
-# ---------------------------------------------------------------------------
-# Time window helper
-# ---------------------------------------------------------------------------
-
-def parse_since(value: str | None) -> datetime | None:
-    # SYNC: This function is duplicated in scripts/briefcase.py. Keep both copies identical.
-    # Divergence = silent behaviour difference.
-    """
-    Parse --since argument into a UTC-aware datetime, or None if not provided.
-
-    Supported relative formats: 30m (minutes), 2h (hours), 1d (days).
-    Supported absolute format: any ISO 8601 string.
-    Raises ValueError for unrecognised formats.
-    """
-    if value is None:
-        return None
-
-    # Relative duration: number + unit suffix (m/h/d)
-    match = re.fullmatch(r"(\d+)(m|h|d)", value.strip())
-    if match:
-        amount = int(match.group(1))
-        unit = match.group(2)
-        delta = {"m": timedelta(minutes=amount), "h": timedelta(hours=amount), "d": timedelta(days=amount)}[unit]
-        return datetime.now(timezone.utc) - delta
-
-    # Absolute ISO 8601 — attach UTC if no timezone info present
-    try:
-        dt = datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError:
-        pass
-
-    raise ValueError(
-        "--since must be a relative duration (e.g. 2h, 30m, 1d) or ISO 8601 timestamp"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -95,20 +56,26 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Parse --since before entering the try/finally — argparse errors should exit cleanly
     try:
         since = parse_since(args.since)
     except ValueError as e:
         print(str(e))
         sys.exit(1)
 
+    # until is always now — use timezone.utc (datetime.utcnow() is deprecated Python 3.12, removed 3.13)
     until = datetime.now(timezone.utc)
 
+    # CSV path must be absolute, computed relative to this file.
+    # Path('_bmad-output/...') would silently write to the wrong location if cwd ≠ repo root.
     csv_path = Path(__file__).parent.parent / "_bmad-output" / "health" / "health-log.csv"
 
     try:
         logfire_data = query_logfire_health(args.karma_code, since, until)
         langfuse_data = query_langfuse_health(args.karma_code, since, until)
 
+        # Archetype priority: CLI arg → Logfire row → "" (empty, honest)
+        # Never default to "Pipeline" — would silently corrupt data for other archetypes
         archetype = args.archetype or logfire_data.get("archetype") or ""
 
         append_health_row(
@@ -130,6 +97,7 @@ def main() -> None:
         print(f"  error_obs:       {langfuse_data['error_observation_count']}")
 
     finally:
+        # Always flush — Langfuse batches events silently. Must run even if exception raised above.
         langfuse.flush()
 
 
