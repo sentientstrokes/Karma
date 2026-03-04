@@ -2,9 +2,31 @@
 
 # Karma Log Standard
 
-**Version:** 2.0 | **Last Updated:** 2026-03-03
+**Version:** 2.1 | **Last Updated:** 2026-03-04
 
-This document is the single reference for how Karma-compliant log entries are structured, what fields are defined, and how agents and pipeline types are identified across projects. The primary reader is an AI Coding Agent — every section is written for machine comprehension first, human engineer second. Start with the Recipe section below — a complete working example — then use the remaining sections as field-by-field reference.
+This document is the single reference for how Karma-compliant log entries are structured, what fields are defined, and how agents and pipeline types are identified across projects. The primary reader is an AI Coding Agent — every section is written for machine comprehension first, human engineer second. Start with the Credentials section below — you need these before anything works — then read the Recipe for a complete working example, then use the remaining sections as field-by-field reference.
+
+---
+
+<!-- CREDENTIALS: Every env var needed for Karma. Read this first — nothing works without these. -->
+
+## Credentials & Environment Variables
+
+All credentials live in `AgentManual/.env` (the parent directory shared across all repos). The SDKs read these automatically at import time — **you never specify a destination URL or project ID in your code.** You just call `logfire.info(...)` or `langfuse.trace(...)` and the data goes to the right place.
+
+| Variable | Used by | Purpose |
+|----------|---------|---------|
+| `LOGFIRE_TOKEN` | Logfire SDK (write) | Authenticates and routes log data to your Logfire project. Read automatically by `import logfire`. |
+| `LOGFIRE_READ_TOKEN` | Karma tools (read) | A separate read-only token for querying logs back — used by Briefcase, Health Dashboard, and MCP Server. Distinct from the write token. |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse SDK | Identifies your Langfuse project. Used for both writing traces and reading them back. |
+| `LANGFUSE_SECRET_KEY` | Langfuse SDK | Authenticates all Langfuse API calls (write and read). |
+| `LANGFUSE_HOST` | Langfuse SDK | Your Langfuse server URL (e.g., `http://localhost:3000` for self-hosted). Defaults to `http://localhost:3000` if omitted. |
+| `AI_MODEL` | Your agent code | The OpenRouter model ID (e.g., `anthropic/claude-sonnet-4-6`). Change this one value to swap the AI model across all repos. |
+| `OPENROUTER_API_KEY` | OpenRouter | Authenticates AI model calls through OpenRouter's unified API. |
+
+**How it works:** When your agent script starts, it loads `AgentManual/.env` via `python-dotenv`. From that point on, every `logfire.info()` call automatically sends data to the Logfire project identified by `LOGFIRE_TOKEN`, and every `langfuse.trace()` call automatically sends data to the Langfuse instance at `LANGFUSE_HOST` using the public/secret key pair. You write Karma fields. The SDKs handle delivery.
+
+**If a variable is missing:** Logfire and Langfuse will raise errors at initialization, not silently fail. Your agent won't start if credentials are absent — this is by design.
 
 ---
 
