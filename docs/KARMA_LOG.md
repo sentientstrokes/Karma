@@ -88,7 +88,79 @@ Two investigation capabilities require no Karma code — they are native to the 
 
 **Langfuse Trace Panel** — full AI reasoning inspection: prompt and completion text, token counts, latency breakdown, cost attribution, nested observation tree. This is the primary AI-level investigation surface.
 
-These are the baseline. What Karma adds on top is described in the next section.
+These are the baseline. What Karma adds on top is described in the sections that follow.
+
+---
+
+<!-- MCP: The Karma MCP Server gives dev AI tools direct access to investigation capabilities without file reads or CLI invocations. -->
+
+## The KARMA MCP Server
+
+The Karma MCP Server is how a dev AI tool (Claude Code, Cursor, etc.) talks directly to Karma. Instead of reading files or running CLI scripts, the dev AI calls Karma tools through the Model Context Protocol — the same way it calls any other tool.
+
+### What It Does
+
+The MCP server exposes 9 tools and 4 resources over stdio transport. It is organized into two layers:
+
+**Quick-Check Layer** — fast, lightweight queries for triage:
+- `get_briefcase` — generate a Briefcase debug report for a `karma_code`
+- `get_health` — fetch health vitals for a `karma_code`
+- `query_flags` — find all red/yellow flags across recent runs
+- `get_trace_url` — get the Langfuse trace URL for a `karma_code`
+
+**Deep Investigation Layer** — detailed queries into Logfire and Langfuse:
+- `query_logfire` — browse application logs with structured filters (no raw SQL)
+- `list_langfuse_traces` — list all AI traces for a `karma_code`
+- `get_langfuse_trace` — full trace detail including observation tree
+- `get_langfuse_observation` — full prompt and completion text for a single observation
+- `list_langfuse_observations` — list observations with optional level/type filters
+
+**Resources** — static reference material served as MCP resources:
+- `karma://briefcases` — list available Briefcase reports
+- `karma://briefcases/{filename}` — read a specific Briefcase report
+- `karma://playbook/investigation` — step-by-step investigation playbook (the YOLO loop)
+- `karma://playbook/quick-check` — 3-call health check sequence
+
+### How a Dev AI Uses It
+
+A dev AI working in any Karma-instrumented project can query Karma directly. Example interaction:
+
+> **You:** "The NRD-Sale-101 run looks wrong, can you check?"
+>
+> **Dev AI:** *calls `get_briefcase(karma_code="NRD-Sale-101")`* → sees yellow flag on retry
+>
+> **Dev AI:** *calls `get_langfuse_observation(observation_id="...")`* → reads the full prompt/completion
+>
+> **Dev AI:** "The retry was caused by a timeout on the CRM call. The model re-attempted with the same prompt and got a shorter response. Here's what I'd change..."
+
+No file reads. No CLI. No copy-paste from browser UIs. The dev AI has direct access to the same data a human would see in Logfire and Langfuse dashboards.
+
+### How It's Registered
+
+The Karma MCP server is registered globally in Claude Code's `~/.claude.json`, making it available to every project:
+
+```json
+{
+  "mcpServers": {
+    "karma": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "scripts/mcp_server.py"],
+      "cwd": "/path/to/AgentManual/Karma"
+    }
+  }
+}
+```
+
+The code lives in `Karma/karma/mcp_server.py`. The entry point is `Karma/scripts/mcp_server.py`, which loads credentials from `AgentManual/.env` before starting the server. Credentials required: `LOGFIRE_READ_TOKEN`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`.
+
+### The Playbooks
+
+The two playbook resources teach the dev AI how to chain tools effectively:
+
+**Investigation Playbook** (`karma://playbook/investigation`): A full YOLO-style investigation loop. Start with `get_briefcase`, check flags, dive into Logfire for application context, pivot to Langfuse for AI reasoning, pull full observation detail on anything suspicious. Loop until root cause is found.
+
+**Quick-Check Playbook** (`karma://playbook/quick-check`): A 3-call health check. `get_health` → `query_flags` → `get_trace_url`. Done in seconds. Enough to answer "is this run healthy?" without a deep dive.
 
 ---
 

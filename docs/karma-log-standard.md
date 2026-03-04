@@ -713,18 +713,126 @@ with propagate_attributes(
 
 ### Chain of Thought — Extended Thinking Mandate
 
-When the model supports extended thinking (e.g., Claude with `thinking={"type": "enabled", "budget_tokens": N}`), the full response — including thinking blocks — **must** be passed through to Langfuse. Stripping `<thinking>` content before logging reduces the trace to inputs and final answers. The reasoning chain is lost. The Briefcase can no longer answer "why."
+**CoT is compulsory.** Every AI call in a Karma-instrumented project must request extended thinking / chain-of-thought reasoning. This is not optional and not conditional on model capability. The reasoning chain is Karma's highest-fidelity debugging signal — without it, the Briefcase can show what happened but not why.
 
-This is a hard requirement, not a suggestion. Karma's primary value for debugging AI decisions is inspectability. Extended thinking is the highest-fidelity signal of AI reasoning available — discarding it defeats the purpose of the entire system.
+#### Why This Is Absolute
 
-**Compliance by integration path:**
+Karma's primary value is inspectability. Extended thinking captures the full reasoning chain: the model's internal deliberation, rejected paths, uncertainty signals, and decision logic. Stripping or skipping it reduces Langfuse traces to inputs and final answers — a black box. The Briefcase can no longer answer "why did the agent do that?"
+
+#### How Models Are Loaded
+
+In the AgentManual multi-repo system, AI model names are stored in `.env` as environment variables (e.g., `AI_MODEL=anthropic/claude-sonnet-4-6`). Changing the model name in `.env` applies the change across all repos. This means the DEV AI implementing an agent cannot know at coding time which model will run — it could be swapped to any model at any time via a single `.env` edit.
+
+This is why CoT must be requested unconditionally. The code always asks for reasoning. Whether the model delivers it depends on its capabilities.
+
+#### The OpenRouter Reasoning Abstraction
+
+All AgentManual projects access models via OpenRouter, which provides a unified `reasoning` parameter that works across providers:
+
+```python
+# Always include reasoning in every AI call — this is mandatory
+response = client.chat.completions.create(
+    model=os.getenv("AI_MODEL"),
+    messages=messages,
+    reasoning={
+        "max_tokens": 10000,  # or use "effort": "high"
+    },
+)
+```
+
+Two control methods exist, and which one applies depends on the model family:
+
+| Method | Applies to | Example |
+|--------|-----------|---------|
+| `reasoning.max_tokens` | Claude, Gemini 2.5, Qwen | `{"max_tokens": 10000}` |
+| `reasoning.effort` | OpenAI o-series, Grok, Gemini 3 | `{"effort": "high"}` |
+
+Both are valid. When unsure which the model uses, prefer `max_tokens` — it has broader support.
+
+#### What Happens When the Model Doesn't Support CoT
+
+By default, OpenRouter **silently drops** the `reasoning` parameter for models that don't support it. The call succeeds. The response comes back without thinking content. No error, no crash — but also no reasoning trace.
+
+This silent degradation is the problem Karma must surface. A model swap in `.env` could silently eliminate all reasoning traces across every repo, and nobody would notice until they try to debug a bad AI decision.
+
+#### The Startup Warning — Detecting CoT Capability
+
+At agent startup, before any AI call is made, the agent **must** check whether the configured model supports reasoning. OpenRouter exposes this via its models API:
+
+```python
+import os, requests, logfire
+
+def check_cot_capability(karma_code: str, archetype: str) -> bool:
+    """Check if the configured model supports CoT. Emit yellow flag if not."""
+    model = os.getenv("AI_MODEL", "")
+    if not model:
+        return False
+
+    try:
+        # OpenRouter's supported_parameters tells you what each model accepts
+        resp = requests.get(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}"},
+            params={"supported_parameters": "reasoning"},
+        )
+        reasoning_models = {m["id"] for m in resp.json().get("data", [])}
+
+        if model not in reasoning_models:
+            logfire.warn(
+                f'⚠️ Model {model} does not support CoT reasoning — '
+                f'traces will lack thinking content',
+                karma_code=karma_code,
+                event='COT_UNSUPPORTED',
+                archetype=archetype,
+                flag='yellow',
+            )
+            return False
+    except Exception:
+        logfire.warn(
+            '⚠️ Could not verify CoT capability — proceeding with reasoning enabled',
+            karma_code=karma_code,
+            event='COT_CHECK_FAILED',
+            archetype=archetype,
+            flag='yellow',
+        )
+    return True
+```
+
+**Key points:**
+
+- `event='COT_UNSUPPORTED'` is a reserved Karma event name for this check
+- The flag is `yellow`, not `red` — the agent can still run, but reasoning traces will be empty
+- This warning appears in the Briefcase, making capability gaps visible during debugging
+- The check runs once at startup, not on every call
+
+#### Forcing Failure Instead of Silent Degradation
+
+If you want the agent to **refuse to run** without CoT (stricter posture), add `require_parameters` to your OpenRouter calls:
+
+```python
+response = client.chat.completions.create(
+    model=os.getenv("AI_MODEL"),
+    messages=messages,
+    reasoning={"max_tokens": 10000},
+    extra_body={
+        "provider": {"require_parameters": True}
+    },
+)
+```
+
+With this set, OpenRouter returns a routing error if the model can't handle `reasoning`. The call fails loudly. This is appropriate for agents where reasoning traces are critical to their function (e.g., decision-heavy pipelines).
+
+#### Compliance by Integration Path
 
 | Path | Required action |
 |------|-----------------|
-| `langfuse.anthropic` wrapper | None — the wrapper captures the full response including thinking blocks automatically |
-| Direct API call + manual Langfuse logging | Include the complete `content` array (thinking blocks + text blocks) in the observation output. Do not filter to text-only. |
+| OpenRouter (recommended) | Always include `reasoning` in every call. Add startup check with `check_cot_capability()`. |
+| `langfuse.anthropic` wrapper | None — the wrapper captures thinking blocks automatically when present |
+| Direct API call + manual Langfuse logging | Include the complete response (thinking blocks + text blocks) in the observation output. Do not filter to text-only. |
 
-**Logfire signal:** Use `event='LOG_THINKING'` on any Logfire span covering an AI call where extended thinking was enabled. This makes CoT-active calls queryable in Logfire independently of Langfuse:
+#### Logfire Signal
+
+Use `event='LOG_THINKING'` on any Logfire span covering an AI call where reasoning was requested. This makes CoT-active calls queryable in Logfire independently of Langfuse:
 
 ```python
 logfire.info(
@@ -736,6 +844,14 @@ logfire.info(
 ```
 
 The thinking content itself lives in Langfuse. The Logfire entry signals its presence and makes it findable via `attributes->>'event' = 'LOG_THINKING'`.
+
+#### Summary of Reserved Events for CoT
+
+| Event | When | Flag |
+|-------|------|------|
+| `LOG_THINKING` | AI call with reasoning requested | None |
+| `COT_UNSUPPORTED` | Startup check finds model lacks reasoning support | `yellow` |
+| `COT_CHECK_FAILED` | Startup check could not reach OpenRouter API | `yellow` |
 
 ---
 
